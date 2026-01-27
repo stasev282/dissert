@@ -1,0 +1,24 @@
+﻿# Raw data files
+*.xlsx
+*.csv
+*.sav
+
+data/
+data_raw/
+raw/
+datasets/
+
+# R temporary/system files
+.Rhistory
+.RData
+.Rproj.user/
+
+# Analysis outputs
+plots/
+outputs/
+results/
+*.pdf
+
+# Python/venv artifacts
+__pycache__/
+.venv/
