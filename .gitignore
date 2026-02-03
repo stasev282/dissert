@@ -1,16 +1,12 @@
-﻿# Raw data files
-*.xlsx
-*.csv
-*.sav
-
-data/
-data_raw/
-raw/
-datasets/
+# Raw data files (only inside data/)
+data/*.xlsx
+data/*.csv
+data/*.sav
 
 # R temporary/system files
 .Rhistory
 .RData
+*.Rproj
 .Rproj.user/
 
 # Analysis outputs
