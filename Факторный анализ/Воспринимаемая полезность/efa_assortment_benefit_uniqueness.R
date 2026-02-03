@@ -2,6 +2,7 @@ library(readxl)
 library(janitor)
 library(psych)
 library(dplyr)
+library(writexl)
 
 # -------------------------
 # 0) load data
@@ -115,3 +116,45 @@ cat("\n--- Structure flag (read with the loadings + variance + Phi) ---\n")
 cat("If 1-factor loadings are broadly strong and 2-factor solution does not separate, then ~1 factor.\n")
 cat("If 2-factor solution shows clean separation and low cross-loadings, then ~2 factors.\n")
 cat("If many cross-loadings and mixed patterns, then structure is likely messy.\n")
+
+# =========================================================
+# 9) EXPORT TO EXCEL: 2 sheets (1 factor, 2 factors)
+# =========================================================
+
+# Sheet 1: 1-factor loadings (single column)
+loadings_1f <- as.data.frame(unclass(efa_1$loadings))
+colnames(loadings_1f) <- "loading_1f"
+loadings_1f$item <- rownames(loadings_1f)
+loadings_1f <- loadings_1f |>
+  select(item, loading_1f) |>
+  arrange(desc(abs(loading_1f)))
+
+# Sheet 2: 2-factor loadings (two columns = includes cross-loadings by definition)
+loadings_2f <- as.data.frame(unclass(efa_2$loadings))
+if (ncol(loadings_2f) < 2) {
+  stop("efa_2 returned < 2 loading columns; cannot build 2-factor sheet.")
+}
+colnames(loadings_2f)[1:2] <- c("loading_f1", "loading_f2")
+loadings_2f$item <- rownames(loadings_2f)
+loadings_2f <- loadings_2f |>
+  select(item, loading_f1, loading_f2) |>
+  mutate(
+    cross_30 = abs(loading_f1) >= 0.30 & abs(loading_f2) >= 0.30
+  ) |>
+  arrange(desc(cross_30), desc(pmax(abs(loading_f1), abs(loading_f2))))
+
+# Write Excel with 2 sheets
+out_file <- "efa_loadings_1f_2f.xlsx"
+write_xlsx(
+  x = list(
+    loadings_1_factor = loadings_1f,
+    loadings_2_factors = loadings_2f
+  ),
+  path = out_file
+)
+
+cat("\n==============================\n")
+cat("Saved Excel:", out_file, "\n")
+cat("Sheets: loadings_1_factor, loadings_2_factors\n")
+cat("==============================\n")
+
