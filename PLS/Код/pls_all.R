@@ -18,7 +18,7 @@ library(tibble)
 # -------------------------
 # 0) load data
 # -------------------------
-all_q <- read_excel("lenta_cfa_sem.xlsx") |> clean_names()
+all_q <- read_excel("all_cfa_sem.xlsx") |> clean_names()
 
 # -------------------------
 # 1) required indicators
@@ -341,7 +341,7 @@ indirect_paths <- tibble::tibble(
 # ============================================================
 # 8) Export Excel (NO total effects)
 # ============================================================
-out_file <- "pls_lenta_direct_indirect.xlsx"
+out_file <- "pls_all_direct_indirect.xlsx"
 
 write_xlsx(
   x = list(
