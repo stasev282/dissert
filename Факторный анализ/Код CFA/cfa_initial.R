@@ -6,6 +6,31 @@ library(writexl)
 
 all_df <- read_excel("all_cfa_sem.xlsx") |> clean_names()
 
+all_df <- all_df |>
+  mutate(
+    stm_freq = as.character(stm_freq),
+    stm_share = as.character(stm_share),
+    stm_knowledge = as.numeric(stm_knowledge),
+
+    stm_freq = case_when(
+      stm_freq == "Реже раза в месяц" ~ 1,
+      stm_freq == "Раз в месяц" ~ 2,
+      stm_freq == "Раз в неделю" ~ 3,
+      stm_freq == "Несколько раз в неделю" ~ 4,
+      stm_freq == "Каждый день" ~ 5,
+      TRUE ~ NA_real_
+    ),
+
+    stm_share = case_when(
+      stm_share == "Менее 10%" ~ 1,
+      stm_share == "10-25%" ~ 2,
+      stm_share == "26-50%" ~ 3,
+      stm_share == "50-75%" ~ 4,
+      stm_share == "Более 75%" ~ 5,
+      TRUE ~ NA_real_
+    )
+  )
+
 items_by_factor <- list(
   assortment = c(
     "assortment_item_category_coverage_likert",
@@ -45,30 +70,26 @@ items_by_factor <- list(
     "loyalty_item_prefer_over_brands_likert",
     "loyalty_item_recommend_pl_likert"
   ),
-  stm_knowledge = "stm_knowledge",
-  stm_freq = "stm_freq",
-  stm_share = "stm_share"
+  stm = c("stm_freq", "stm_share", "stm_knowledge")
 )
 
 needed_all <- unlist(items_by_factor, use.names = FALSE)
 missing_cols <- setdiff(needed_all, names(all_df))
 if (length(missing_cols) > 0) stop(paste(missing_cols, collapse = "\n"))
 
+ordered_vars <- setdiff(needed_all, c("stm_freq", "stm_share", "stm_knowledge"))
+
 make_block <- function(fac, items) {
-  if (length(items) == 1) {
-    item <- items[[1]]
-    paste0(fac, " =~ 1*", item, "\n", item, " ~~ 0*", item)
-  } else {
-    paste0(fac, " =~ ", paste(items, collapse = " + "))
-  }
+  items <- as.character(items)
+  paste0(fac, " =~ ", paste(items, collapse = " + "))
 }
 
-model_cfa <- imap_chr(items_by_factor, make_block) |> paste(collapse = "\n")
+model_cfa <- map2_chr(names(items_by_factor), items_by_factor, make_block) |> paste(collapse = "\n")
 
 fit <- cfa(
   model = model_cfa,
   data = all_df,
-  ordered = needed_all,
+  ordered = ordered_vars,
   estimator = "WLSMV",
   std.lv = TRUE
 )
@@ -98,6 +119,23 @@ loadings <- pe |>
   ) |>
   arrange(factor, desc(abs(loading_std)))
 
+latent_corr <- pe |>
+  filter(op == "~~", lhs != rhs) |>
+  transmute(
+    factor_1 = lhs,
+    factor_2 = rhs,
+    corr = std.all,
+    se = se,
+    z = z,
+    pvalue = pvalue
+  ) |>
+  arrange(desc(abs(corr)))
+
+corr_matrix <- lavaan::lavInspect(fit, "cor.lv") |>
+  as.matrix() |>
+  as_tibble(rownames = "factor") |>
+  relocate(factor)
+
 cronbach_alpha <- function(df_items) {
   x <- df_items |> mutate(across(everything(), as.numeric))
   x <- x[complete.cases(x), , drop = FALSE]
@@ -107,7 +145,7 @@ cronbach_alpha <- function(df_items) {
   as.numeric((k/(k-1)) * (1 - sum(diag(S)) / sum(S)))
 }
 
-alpha_tbl <- imap_dfr(items_by_factor, \(items, fac) {
+alpha_tbl <- map2_dfr(names(items_by_factor), items_by_factor, \(fac, items) {
   if (length(items) < 2) {
     tibble(factor = fac, cronbach_alpha = NA_real_)
   } else {
@@ -136,11 +174,25 @@ reliability_tbl <- alpha_tbl |>
   left_join(cr_tbl, by = "factor") |>
   arrange(factor)
 
+stm_check <- all_df |>
+  summarise(
+    stm_freq_unique = n_distinct(stm_freq, na.rm = TRUE),
+    stm_share_unique = n_distinct(stm_share, na.rm = TRUE),
+    stm_knowledge_unique = n_distinct(stm_knowledge, na.rm = TRUE),
+    stm_freq_na = sum(is.na(stm_freq)),
+    stm_share_na = sum(is.na(stm_share)),
+    stm_knowledge_na = sum(is.na(stm_knowledge))
+  )
+
 write_xlsx(
   x = list(
     fit_measures = fit_measures_tbl,
     loadings = loadings,
-    reliability_alpha_cr = reliability_tbl
+    reliability_alpha_cr = reliability_tbl,
+    latent_correlations = latent_corr,
+    latent_corr_matrix = corr_matrix,
+    stm_distribution_check = stm_check
   ),
   path = "cfa_loadings_reliability.xlsx"
 )
+
