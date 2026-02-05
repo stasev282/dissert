@@ -7,20 +7,6 @@ library(writexl)
 
 all_df <- read_excel("all_cfa_sem.xlsx") |> clean_names()
 
-# ============================================================
-# CFA + Reliability (HCM / second-order)
-# 1st-order: assortment (3), benefit (3), uniqueness (3),
-#            attitude (2), retailer_img (2), loyalty_retailer (3), loyalty_item (3)
-# 2nd-order: perceived_value =~ assortment + benefit + uniqueness
-# Outputs (Excel):
-# - loadings_first_order (std + p)
-# - loadings_second_order (std + p)
-# - reliability_alpha_cr (alpha + CR) for 1st-order + 2nd-order
-# ============================================================
-
-# -------------------------
-# 1) item mapping (1st-order)
-# -------------------------
 items_by_factor_1st <- list(
   assortment = c(
     "assortment_item_category_coverage_likert",
@@ -61,9 +47,6 @@ needed_all <- unlist(items_by_factor_1st, use.names = FALSE)
 missing_cols_all <- setdiff(needed_all, names(all_df))
 if (length(missing_cols_all) > 0) stop("Missing columns:\n", paste(missing_cols_all, collapse = "\n"))
 
-# -------------------------
-# 2) build model (HCM)
-# -------------------------
 model_cfa_1st <- imap_chr(items_by_factor_1st, \(items, fac) {
   paste0(fac, " =~ ", paste(items, collapse = " + "))
 }) |> paste(collapse = "\n")
@@ -76,9 +59,6 @@ model_cfa_all <- paste(model_cfa_1st, model_cfa_2nd, sep = "\n")
 
 cat("\n--- CFA model (HCM) ---\n"); cat(model_cfa_all); cat("\n-----------------------\n")
 
-# -------------------------
-# 3) fit CFA (ordinal)
-# -------------------------
 fit_all <- cfa(
   model = model_cfa_all,
   data = all_df,
@@ -100,9 +80,6 @@ fit_measures_tbl <- tibble(
 cat("\n--- Fit measures (HCM) ---\n")
 print(fit_measures_tbl)
 
-# -------------------------
-# 4) loadings tables (std + p) for BOTH levels
-# -------------------------
 pe <- parameterEstimates(fit_all, standardized = TRUE)
 
 loadings_all <- pe |>
@@ -132,9 +109,6 @@ print(loadings_second_order)
 cat("\n--- Standardized loadings (1st order) ---\n")
 print(loadings_first_order)
 
-# -------------------------
-# 5) Cronbach alpha per 1st-order factor (items)
-# -------------------------
 cronbach_alpha <- function(df_items) {
   x <- df_items |> mutate(across(everything(), as.numeric))
   x <- x[complete.cases(x), , drop = FALSE]
@@ -152,8 +126,6 @@ alpha_tbl_1st <- imap_dfr(items_by_factor_1st, \(items, fac) {
   )
 }) |> arrange(factor)
 
-# For 2nd-order alpha: typically not reported; if you insist, it depends on scores.
-# We'll output NA explicitly to avoid pretending.
 alpha_tbl_2nd <- tibble(
   factor = "perceived_value",
   cronbach_alpha = NA_real_
@@ -161,11 +133,6 @@ alpha_tbl_2nd <- tibble(
 
 alpha_tbl_all <- bind_rows(alpha_tbl_1st, alpha_tbl_2nd) |> arrange(factor)
 
-# -------------------------
-# 6) Composite Reliability (CR) from standardized loadings
-#    - 1st-order: from item loadings
-#    - 2nd-order: from loadings of (assortment, benefit, uniqueness)
-# -------------------------
 cr_from_loadings <- function(lambdas) {
   lambdas <- as.numeric(lambdas)
   lambdas <- lambdas[!is.na(lambdas)]
@@ -189,9 +156,6 @@ cr_tbl_2nd <- loadings_second_order |>
 
 cr_tbl_all <- bind_rows(cr_tbl_1st, cr_tbl_2nd) |> arrange(factor)
 
-# -------------------------
-# 7) final reliability table (alpha + CR)
-# -------------------------
 reliability_tbl <- alpha_tbl_all |>
   left_join(cr_tbl_all, by = "factor") |>
   arrange(factor)
@@ -199,9 +163,6 @@ reliability_tbl <- alpha_tbl_all |>
 cat("\n--- Reliability summary (alpha + CR) ---\n")
 print(reliability_tbl)
 
-# -------------------------
-# 8) Export to Excel
-# -------------------------
 out_file <- "cfa_hcm_loadings_reliability.xlsx"
 
 write_xlsx(
@@ -214,7 +175,3 @@ write_xlsx(
   path = out_file
 )
 
-cat("\n==============================\n")
-cat("Saved Excel:", out_file, "\n")
-cat("Sheets: fit_measures, loadings_second_order, loadings_first_order, reliability_alpha_cr\n")
-cat("==============================\n")

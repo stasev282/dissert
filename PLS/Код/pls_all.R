@@ -7,18 +7,6 @@ library(cSEM)
 library(tibble)
 library(writexl)
 
-# ============================================================
-# Two-stage HCM + Moderation (gender):
-# - run csem bootstrap separately in male/female
-# - parse summarize(res) blocks (etalon-style) for beta/se/t/p/CI
-# - proof of moderation: bootstrap DIFF (male - female) for effects
-# Data: all_cfa_sem.xlsx
-# Moderator: socdec_gender
-# ============================================================
-
-# -------------------------
-# 0) LOAD DATA
-# -------------------------
 raw <- read_excel("all_cfa_sem.xlsx") |> clean_names()
 
 vars <- c(
@@ -47,9 +35,6 @@ vars <- c(
 missing_cols <- setdiff(vars, names(raw))
 if (length(missing_cols) > 0) stop("Missing columns:\n", paste(missing_cols, collapse = "\n"))
 
-# -------------------------
-# 1) CLEAN gender + numeric + drop_na
-# -------------------------
 df0 <- raw |>
   select(all_of(vars)) |>
   mutate(
@@ -63,7 +48,7 @@ df0 <- raw |>
       TRUE ~ NA_character_
     ),
     gender_clean = case_when(
-      gender_clean == "1" ~ "male",    # swap if your coding is opposite
+      gender_clean == "1" ~ "male",    
       gender_clean == "2" ~ "female",
       TRUE ~ gender_clean
     )
@@ -84,9 +69,7 @@ female_df <- df_num |> filter(gender_clean == "female") |> select(-socdec_gender
 
 cat("\nN male:", nrow(male_df), "| N female:", nrow(female_df), "\n")
 
-# -------------------------
-# 2) MODEL: two-stage HCM + mediation
-# -------------------------
+
 model <- "
 assortment =~
   assortment_item_category_coverage_likert +
@@ -128,9 +111,6 @@ loyalty_item ~ perceived_value + attitude + retailer_img
 loyalty_retailer ~ loyalty_item + perceived_value + attitude + retailer_img
 "
 
-# -------------------------
-# 3) PARSER (same as your etalon)
-# -------------------------
 parse_block <- function(txt, block_title) {
   i0 <- grep(paste0("^", block_title, ":"), txt)
   if (length(i0) == 0) return(tibble())
@@ -206,9 +186,7 @@ extract_tables_from_res <- function(res, group_label) {
   list(direct = direct, indirect = indirect, r2 = r2_tbl)
 }
 
-# -------------------------
-# 4) FIT + BOOTSTRAP (per group)
-# -------------------------
+
 B <- 5000
 set.seed(42)
 
@@ -243,12 +221,7 @@ r2_f <- tab_f$r2
 if (nrow(direct_m) == 0 || nrow(direct_f) == 0) stop("Direct paths parse failed — summarize(res) format changed.")
 if (nrow(indirect_m) == 0 || nrow(indirect_f) == 0) warning("Indirect parse empty in a group — check mediation or summarize format.")
 
-# -------------------------
-# 5) Moderation proof via bootstrap DIFF (male - female)
-# We compute diff on bootstrap draws (not on parsed text).
-# -------------------------
 
-# helper: safe get cell from matrix by names
 get_cell <- function(mat, row, col) {
   if (!is.matrix(mat)) return(NA_real_)
   rn <- rownames(mat); cn <- colnames(mat)
@@ -267,16 +240,10 @@ summ_diff <- function(d) {
   tibble(estimate = est, ci_low = ci[1], ci_high = ci[2], p_value = p_two)
 }
 
-# We will diff:
-# - direct paths (from Resample$Estimates$Path_estimates)
-# - indirect effects (from Resample$Estimates$Indirect_effects) if present
-# If indirect slot missing, we rebuild indirect = (a*b) from path matrices.
-
 Bm <- length(res_m$Resample$Estimates$Path_estimates)
 Bf <- length(res_f$Resample$Estimates$Path_estimates)
 Bmin <- min(Bm, Bf)
 
-# define which direct paths to test moderation for
 direct_targets <- tribble(
   ~to,              ~from,
   "loyalty_item",    "perceived_value",
@@ -288,7 +255,7 @@ direct_targets <- tribble(
   "loyalty_retailer","retailer_img"
 )
 
-# direct diff table
+
 diff_direct <- bind_rows(lapply(seq_len(nrow(direct_targets)), \(k) {
   lhs <- direct_targets$to[[k]]
   rhs <- direct_targets$from[[k]]
@@ -300,11 +267,10 @@ diff_direct <- bind_rows(lapply(seq_len(nrow(direct_targets)), \(k) {
     bind_cols(summ_diff(dm - df))
 }))
 
-# indirect diff table
+
 have_ind_m <- !is.null(res_m$Resample$Estimates$Indirect_effects)
 have_ind_f <- !is.null(res_f$Resample$Estimates$Indirect_effects)
 
-# define which indirect effects to test moderation for (via loyalty_item mediator)
 ind_targets <- tribble(
   ~x,               ~m,           ~y,
   "perceived_value", "loyalty_item","loyalty_retailer",
@@ -318,11 +284,9 @@ diff_indirect <- bind_rows(lapply(seq_len(nrow(ind_targets)), \(k) {
   y <- ind_targets$y[[k]]
 
   if (have_ind_m && have_ind_f) {
-    # try to get indirect from Indirect_effects matrices
     dm <- vapply(seq_len(Bmin), \(i) get_cell(res_m$Resample$Estimates$Indirect_effects[[i]], y, x), numeric(1))
     df <- vapply(seq_len(Bmin), \(i) get_cell(res_f$Resample$Estimates$Indirect_effects[[i]], y, x), numeric(1))
   } else {
-    # rebuild as (x -> m) * (m -> y) from path matrices
     dm <- vapply(seq_len(Bmin), \(i) {
       pe <- res_m$Resample$Estimates$Path_estimates[[i]]
       get_cell(pe, m, x) * get_cell(pe, y, m)
@@ -338,9 +302,7 @@ diff_indirect <- bind_rows(lapply(seq_len(nrow(ind_targets)), \(k) {
     bind_cols(summ_diff(dm - df))
 }))
 
-# -------------------------
-# 6) EXPORT
-# -------------------------
+
 out_file <- "pls_2stage_gender_moderation_proofs.xlsx"
 
 sample_info <- tibble(
@@ -367,8 +329,3 @@ write_xlsx(
   path = out_file
 )
 
-cat("\nSaved:", out_file, "\n")
-cat("Sheets: sample_info, direct_*, indirect_*, r2_*, diff_direct_*, diff_indirect_*\n")
-cat("\nREADING RULES:\n")
-cat("- Within group: effect significant if 95% CI does NOT include 0 (or p_value < 0.05).\n")
-cat("- Moderation: diff_* significant if its CI does NOT include 0 (or p_value < 0.05).\n")

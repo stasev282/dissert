@@ -364,9 +364,6 @@ cat("\nREADING RULES:\n")
 cat("- Within cluster: indirect significant if 95% CI does NOT include 0 (or p_value < 0.05).\n")
 cat("- Moderated mediation: diff significant if 95% CI does NOT include 0 (or p_value < 0.05).\n")
 
-# -------------------------
-# 10) Export Excel (same style as before)
-# -------------------------
 out_file <- "pls_2stage_cluster_indirect_diffs.xlsx"
 
 write_xlsx(
@@ -378,6 +375,3 @@ write_xlsx(
   ),
   path = out_file
 )
-
-cat("\nSaved Excel:", out_file, "\n")
-cat("Sheets: cluster_sizes, point_indirect, bootstrap_indirect_by_cluster, diff_indirect_pairwise\n")

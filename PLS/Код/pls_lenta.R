@@ -8,12 +8,9 @@ library(cSEM)
 library(tibble)
 library(writexl)
 
-# -------------------------
-# 0) LOAD DATA (explicit)
-# -------------------------
+
 raw <- read_excel("lenta_cfa_sem.xlsx") |> clean_names()
 
-# Explicit variables used in the model (your indicators)
 vars <- c(
   # assortment
   "assortment_item_category_coverage_likert",
@@ -46,7 +43,6 @@ vars <- c(
 missing_cols <- setdiff(vars, names(raw))
 if (length(missing_cols) > 0) stop("Missing columns:\n", paste(missing_cols, collapse = "\n"))
 
-# Subset + numeric + drop NA rows (explicit preprocessing)
 df <- raw |>
   select(all_of(vars)) |>
   mutate(across(everything(), \(x) {
@@ -61,9 +57,7 @@ cat("- file:", "all_cfa_sem.xlsx", "\n")
 cat("- n rows after drop_na:", nrow(df), "\n")
 cat("- columns used:", ncol(df), "\n")
 
-# -------------------------
-# 1) MODEL (explicit): 2nd order + mediation
-# -------------------------
+
 model <- "
 assortment =~
   assortment_item_category_coverage_likert +
@@ -105,9 +99,6 @@ loyalty_item ~ perceived_value + attitude + retailer_img
 loyalty_retailer ~ loyalty_item
 "
 
-# -------------------------
-# 2) FIT + BOOTSTRAP (explicit)
-# -------------------------
 set.seed(42)
 res <- csem(
   .data = df,
@@ -118,10 +109,6 @@ res <- csem(
   .handle_inadmissibles = "drop"
 )
 
-# -------------------------
-# 3) PARSE summarize(res) FOR DIRECT + INDIRECT (beta, p, CI)
-# (two-stage friendly: summarize prints inference even if not stored in slots)
-# -------------------------
 parse_block <- function(txt, block_title) {
   i0 <- grep(paste0("^", block_title, ":"), txt)
   if (length(i0) == 0) return(tibble())
@@ -192,18 +179,12 @@ indirect_paths <- parse_block(txt, "Estimated indirect effects") |>
 if (nrow(direct_paths) == 0) stop("No direct paths parsed — summarize(res) format changed.")
 if (nrow(indirect_paths) == 0) warning("No indirect paths parsed (check mediation structure).")
 
-# -------------------------
-# 4) R2 (explicit from second stage estimates)
-# -------------------------
 R2 <- res$Second_stage$Estimates$R2
 r2_tbl <- tibble(
   construct = names(R2),
   r2 = as.numeric(R2)
 )
 
-# -------------------------
-# 5) EXPORT
-# -------------------------
 out_file <- "lenta_pls_2stage_direct_indirect_r2.xlsx"
 
 write_xlsx(
@@ -215,5 +196,3 @@ write_xlsx(
   path = out_file
 )
 
-cat("\nSaved:", out_file, "\n")
-cat("Sheets: direct_paths, indirect_paths, r2\n")

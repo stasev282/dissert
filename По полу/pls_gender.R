@@ -4,23 +4,10 @@ library(dplyr)
 library(tidyr)
 library(cSEM)
 library(stringr)
-library(writexl)   # [ADDED]
+library(writexl) 
 
-# ============================================================
-# PLS-SEM: TWO-STAGE (2nd order perceived_value) + mediation
-# Strict bootstrap significance of INDIRECT (a*b) within groups
-# Moderation by gender: compare indirect effects between groups
-# Moderator column: socdec_gender
-# ============================================================
-
-# -------------------------
-# 0) load data
-# -------------------------
 all_q <- read_excel("all_cfa_sem.xlsx") |> clean_names()
 
-# -------------------------
-# 1) required indicators + moderator
-# -------------------------
 needed <- c(
   # assortment (3)
   "assortment_item_category_coverage_likert",
@@ -55,9 +42,6 @@ needed <- c(
 missing_cols <- setdiff(needed, names(all_q))
 if (length(missing_cols) > 0) stop("Missing columns:\n", paste(missing_cols, collapse = "\n"))
 
-# -------------------------
-# 2) Clean gender: keep only male/female (drop NA / prefer not answer)
-# -------------------------
 df0 <- all_q |>
   select(all_of(needed)) |>
   mutate(
@@ -71,7 +55,7 @@ df0 <- all_q |>
       TRUE ~ NA_character_
     ),
     gender_clean = case_when(
-      gender_clean == "1" ~ "male",   # если у тебя наоборот — свапни
+      gender_clean == "1" ~ "male",   
       gender_clean == "2" ~ "female",
       TRUE ~ gender_clean
     )
@@ -79,9 +63,6 @@ df0 <- all_q |>
   filter(!is.na(gender_clean)) |>
   select(-g)
 
-# -------------------------
-# 3) Likert -> numeric + drop NA rows
-# -------------------------
 pls_df <- df0 |>
   mutate(across(-c(socdec_gender, gender_clean), \(x) {
     if (is.numeric(x)) return(x)
@@ -90,24 +71,17 @@ pls_df <- df0 |>
   })) |>
   drop_na()
 
-# Split groups
 pls_male   <- pls_df |> filter(gender_clean == "male")   |> select(-socdec_gender, -gender_clean)
 pls_female <- pls_df |> filter(gender_clean == "female") |> select(-socdec_gender, -gender_clean)
 
 cat("\nN male:", nrow(pls_male), " | N female:", nrow(pls_female), "\n")
 if (nrow(pls_male) < 30 || nrow(pls_female) < 30) warning("One of the groups has <30 observations. Results may be unstable.")
 
-# [ADDED] sample sizes sheet
 sample_sizes <- data.frame(
   group = c("male", "female"),
   n = c(nrow(pls_male), nrow(pls_female))
 )
 
-# -------------------------
-# 4) TWO-STAGE PLS-SEM model:
-# perceived_value = 2nd order = assortment + benefit + uniqueness
-# NOTE: partial mediation (direct X->loyalty_retailer present).
-# -------------------------
 model_pls <- "
 # first-order measurement
 assortment =~
@@ -151,9 +125,6 @@ loyalty_item ~ perceived_value + attitude + retailer_img
 loyalty_retailer ~ loyalty_item + perceived_value + attitude + retailer_img
 "
 
-# -------------------------
-# 5) Fit once + extract SECOND STAGE path matrix
-# -------------------------
 fit_pls_once <- function(dat) {
   res <- csem(
     .data = dat,
@@ -164,7 +135,6 @@ fit_pls_once <- function(dat) {
   res$Second_stage$Estimates$Path_estimates
 }
 
-# --- robust name resolver for two-stage matrices (handles *_temp) ---
 resolve_name <- function(x, pool) {
   if (x %in% pool) return(x)
   x_temp <- paste0(x, "_temp")
@@ -185,7 +155,6 @@ get_beta <- function(path_mat, to, from) {
   as.numeric(path_mat[to2, from2])
 }
 
-# point indirect effects a*b
 ind_point_from_pm <- function(pm) {
   a_pv  <- get_beta(pm, to = "loyalty_item",     from = "perceived_value")
   a_att <- get_beta(pm, to = "loyalty_item",     from = "attitude")
@@ -199,9 +168,6 @@ ind_point_from_pm <- function(pm) {
   )
 }
 
-# -------------------------
-# 6) strict bootstrap for indirect effects (a*b) within a group
-# -------------------------
 bootstrap_indirect <- function(dat, B = 5000, seed = 42, label = "group") {
   set.seed(seed)
   n <- nrow(dat)
@@ -249,9 +215,6 @@ bootstrap_indirect <- function(dat, B = 5000, seed = 42, label = "group") {
   )
 }
 
-# -------------------------
-# 7) Point indirect effects by group
-# -------------------------
 pm_m <- fit_pls_once(pls_male)
 pm_f <- fit_pls_once(pls_female)
 
@@ -264,9 +227,6 @@ names(point_tbl) <- c("group", "indirect_pv", "indirect_attitude", "indirect_ret
 cat("\n========================\nPOINT INDIRECT EFFECTS (two-stage)\n========================\n")
 print(point_tbl)
 
-# -------------------------
-# 8) Bootstrap indirect significance by group
-# -------------------------
 B <- 5000
 boot_m <- bootstrap_indirect(pls_male,   B = B, seed = 100, label = "male")
 boot_f <- bootstrap_indirect(pls_female, B = B, seed = 200, label = "female")
@@ -294,9 +254,6 @@ boot_tbl <- bind_rows(
 cat("\n========================\nBOOTSTRAP INDIRECT SIGNIFICANCE (BY GROUP)\n========================\n")
 print(boot_tbl)
 
-# -------------------------
-# 9) Moderated mediation: diff in indirect (male - female) + significance
-# -------------------------
 diff_test <- function(draw_m, draw_f) {
   Bm <- length(draw_m); Bf <- length(draw_f)
   Bmin <- min(Bm, Bf)
@@ -333,9 +290,6 @@ diff_tbl <- data.frame(
 cat("\n========================\nMODERATED MEDIATION (DIFF INDIRECT male - female)\n========================\n")
 print(diff_tbl)
 
-# -------------------------
-# 10) EXPORT TO EXCEL (sheets)
-# -------------------------
 out_file <- "pls_2stage_gender_indirect_diffs.xlsx"
 
 write_xlsx(
@@ -348,10 +302,3 @@ write_xlsx(
   path = out_file
 )
 
-cat("\nSaved Excel:", out_file, "\n")
-cat("Sheets: sample_sizes, point_indirect, bootstrap_indirect_by_group, diff_indirect\n")
-
-cat("\nREADING RULES:\n")
-cat("- Within group: indirect significant if 95% CI does NOT include 0 (or p_value < 0.05).\n")
-cat("- Moderated mediation: diff significant if 95% CI does NOT include 0 (or p_value < 0.05).\n")
-cat("- If your gender coding 1/2 is reversed, swap mapping in Step 2.\n")
