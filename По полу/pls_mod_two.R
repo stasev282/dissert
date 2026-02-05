@@ -4,10 +4,12 @@ library(dplyr)
 library(tidyr)
 library(cSEM)
 library(stringr)
+library(writexl)   # [ADDED]
 
 # ============================================================
-# PLS-SEM: mediation + strict bootstrap significance of INDIRECT
-# Moderation by gender = compare indirect effects between groups
+# PLS-SEM: TWO-STAGE (2nd order perceived_value) + mediation
+# Strict bootstrap significance of INDIRECT (a*b) within groups
+# Moderation by gender: compare indirect effects between groups
 # Moderator column: socdec_gender
 # ============================================================
 
@@ -20,13 +22,15 @@ all_q <- read_excel("all_cfa_sem.xlsx") |> clean_names()
 # 1) required indicators + moderator
 # -------------------------
 needed <- c(
-  # perceived_value (BIG FACTOR, 9)
+  # assortment (3)
   "assortment_item_category_coverage_likert",
   "assortment_item_price_range_likert",
   "assortment_item_wide_choice_likert",
+  # benefit (3)
   "benefit_item_choose_same_price_likert",
   "benefit_item_saves_money_likert",
   "benefit_item_value_money_likert",
+  # uniqueness (3)
   "uniqueness_item_new_interest_likert",
   "uniqueness_item_unique_features_likert",
   "uniqueness_item_visit_for_pl_likert",
@@ -49,14 +53,10 @@ needed <- c(
 )
 
 missing_cols <- setdiff(needed, names(all_q))
-if (length(missing_cols) > 0) {
-  stop("Missing columns:\n", paste(missing_cols, collapse = "\n"))
-}
+if (length(missing_cols) > 0) stop("Missing columns:\n", paste(missing_cols, collapse = "\n"))
 
 # -------------------------
-# 2) Clean gender: keep only male/female (drop "prefer not to answer")
-#    - robust for RU/EN strings
-#    - if socdec_gender is numeric (1/2), assumes 1=male, 2=female (edit if needed)
+# 2) Clean gender: keep only male/female (drop NA / prefer not answer)
 # -------------------------
 df0 <- all_q |>
   select(all_of(needed)) |>
@@ -71,7 +71,7 @@ df0 <- all_q |>
       TRUE ~ NA_character_
     ),
     gender_clean = case_when(
-      gender_clean == "1" ~ "male",   # if your coding is opposite, swap these
+      gender_clean == "1" ~ "male",   # если у тебя наоборот — свапни
       gender_clean == "2" ~ "female",
       TRUE ~ gender_clean
     )
@@ -86,7 +86,7 @@ pls_df <- df0 |>
   mutate(across(-c(socdec_gender, gender_clean), \(x) {
     if (is.numeric(x)) return(x)
     if (is.factor(x) || is.ordered(x)) return(as.numeric(x))
-    suppressWarnings(as.numeric(x))
+    suppressWarnings(as.numeric(as.character(x)))
   })) |>
   drop_na()
 
@@ -95,22 +95,32 @@ pls_male   <- pls_df |> filter(gender_clean == "male")   |> select(-socdec_gende
 pls_female <- pls_df |> filter(gender_clean == "female") |> select(-socdec_gender, -gender_clean)
 
 cat("\nN male:", nrow(pls_male), " | N female:", nrow(pls_female), "\n")
-if (nrow(pls_male) < 30 || nrow(pls_female) < 30) {
-  warning("One of the groups has <30 observations. Results may be unstable.")
-}
+if (nrow(pls_male) < 30 || nrow(pls_female) < 30) warning("One of the groups has <30 observations. Results may be unstable.")
+
+# [ADDED] sample sizes sheet
+sample_sizes <- data.frame(
+  group = c("male", "female"),
+  n = c(nrow(pls_male), nrow(pls_female))
+)
 
 # -------------------------
-# 4) PLS-SEM mediation model (partial mediation)
+# 4) TWO-STAGE PLS-SEM model:
+# perceived_value = 2nd order = assortment + benefit + uniqueness
+# NOTE: partial mediation (direct X->loyalty_retailer present).
 # -------------------------
 model_pls <- "
-# measurement model (reflective)
-perceived_value =~
+# first-order measurement
+assortment =~
   assortment_item_category_coverage_likert +
   assortment_item_price_range_likert +
-  assortment_item_wide_choice_likert +
+  assortment_item_wide_choice_likert
+
+benefit =~
   benefit_item_choose_same_price_likert +
   benefit_item_saves_money_likert +
-  benefit_item_value_money_likert +
+  benefit_item_value_money_likert
+
+uniqueness =~
   uniqueness_item_new_interest_likert +
   uniqueness_item_unique_features_likert +
   uniqueness_item_visit_for_pl_likert
@@ -133,13 +143,16 @@ loyalty_retailer =~
   loyalty_retailer_prefer_over_brands_likert +
   loyalty_retailer_recommend_pl_likert
 
-# structural (mediation)
+# second-order measurement (two-stage)
+perceived_value =~ assortment + benefit + uniqueness
+
+# structural (PARTIAL mediation)
 loyalty_item ~ perceived_value + attitude + retailer_img
 loyalty_retailer ~ loyalty_item + perceived_value + attitude + retailer_img
 "
 
 # -------------------------
-# 5) helper: fit PLS once and extract path table
+# 5) Fit once + extract SECOND STAGE path matrix
 # -------------------------
 fit_pls_once <- function(dat) {
   res <- csem(
@@ -148,22 +161,36 @@ fit_pls_once <- function(dat) {
     .approach_weights = "PLS-PM",
     .handle_inadmissibles = "drop"
   )
-  summarize(res)$Estimates$Path_estimates
+  res$Second_stage$Estimates$Path_estimates
 }
 
-get_path <- function(path_table, lhs, rhs) {
-  key <- paste0(lhs, " ~ ", rhs)
-  row <- path_table |> dplyr::filter(.data$Name == key)
-  if (nrow(row) == 0) return(NA_real_)
-  row$Estimate[[1]]
+# --- robust name resolver for two-stage matrices (handles *_temp) ---
+resolve_name <- function(x, pool) {
+  if (x %in% pool) return(x)
+  x_temp <- paste0(x, "_temp")
+  if (x_temp %in% pool) return(x_temp)
+  x_notemp <- sub("_temp$", "", x)
+  if (x_notemp %in% pool) return(x_notemp)
+  NA_character_
 }
 
-# Point indirect effects from a path table
-ind_point_from_pe <- function(pe) {
-  a_pv  <- get_path(pe, "loyalty_item", "perceived_value")
-  a_att <- get_path(pe, "loyalty_item", "attitude")
-  a_img <- get_path(pe, "loyalty_item", "retailer_img")
-  b_li  <- get_path(pe, "loyalty_retailer", "loyalty_item")
+get_beta <- function(path_mat, to, from) {
+  rn <- rownames(path_mat); cn <- colnames(path_mat)
+  if (is.null(rn) || is.null(cn)) return(NA_real_)
+
+  to2   <- resolve_name(to, rn)
+  from2 <- resolve_name(from, cn)
+
+  if (is.na(to2) || is.na(from2)) return(NA_real_)
+  as.numeric(path_mat[to2, from2])
+}
+
+# point indirect effects a*b
+ind_point_from_pm <- function(pm) {
+  a_pv  <- get_beta(pm, to = "loyalty_item",     from = "perceived_value")
+  a_att <- get_beta(pm, to = "loyalty_item",     from = "attitude")
+  a_img <- get_beta(pm, to = "loyalty_item",     from = "retailer_img")
+  b_li  <- get_beta(pm, to = "loyalty_retailer", from = "loyalty_item")
 
   c(
     indirect_pv = a_pv * b_li,
@@ -187,12 +214,12 @@ bootstrap_indirect <- function(dat, B = 5000, seed = 42, label = "group") {
     idx <- sample.int(n, size = n, replace = TRUE)
     dat_b <- dat[idx, , drop = FALSE]
 
-    pe <- fit_pls_once(dat_b)
+    pm <- fit_pls_once(dat_b)
 
-    a_pv  <- get_path(pe, "loyalty_item", "perceived_value")
-    a_att <- get_path(pe, "loyalty_item", "attitude")
-    a_img <- get_path(pe, "loyalty_item", "retailer_img")
-    b_li  <- get_path(pe, "loyalty_retailer", "loyalty_item")
+    a_pv  <- get_beta(pm, to = "loyalty_item",     from = "perceived_value")
+    a_att <- get_beta(pm, to = "loyalty_item",     from = "attitude")
+    a_img <- get_beta(pm, to = "loyalty_item",     from = "retailer_img")
+    b_li  <- get_beta(pm, to = "loyalty_retailer", from = "loyalty_item")
 
     ind_pv[i]  <- a_pv  * b_li
     ind_att[i] <- a_att * b_li
@@ -203,21 +230,15 @@ bootstrap_indirect <- function(dat, B = 5000, seed = 42, label = "group") {
 
   summarize_dist <- function(x) {
     x <- x[is.finite(x)]
-    est <- mean(x)
+    est <- mean(x, na.rm = TRUE)
     ci <- quantile(x, probs = c(0.025, 0.975), names = FALSE, na.rm = TRUE)
 
-    # two-sided bootstrap p-value via sign proportion
     p_lo <- mean(x <= 0, na.rm = TRUE)
     p_hi <- mean(x >= 0, na.rm = TRUE)
     p_two <- 2 * min(p_lo, p_hi)
     p_two <- min(p_two, 1)
 
-    list(
-      estimate = est,
-      ci_low = ci[1],
-      ci_high = ci[2],
-      p_value = p_two
-    )
+    list(estimate = est, ci_low = ci[1], ci_high = ci[2], p_value = p_two)
   }
 
   list(
@@ -229,31 +250,35 @@ bootstrap_indirect <- function(dat, B = 5000, seed = 42, label = "group") {
 }
 
 # -------------------------
-# 7) Point indirect effects (no bootstrap) by group
+# 7) Point indirect effects by group
 # -------------------------
-pe_m <- fit_pls_once(pls_male)
-pe_f <- fit_pls_once(pls_female)
+pm_m <- fit_pls_once(pls_male)
+pm_f <- fit_pls_once(pls_female)
 
-cat("\n========================\nPOINT INDIRECT EFFECTS\n========================\n")
-point_tbl <- dplyr::bind_rows(
-  data.frame(group = "male",   t(ind_point_from_pe(pe_m)), check.names = FALSE),
-  data.frame(group = "female", t(ind_point_from_pe(pe_f)), check.names = FALSE)
+point_tbl <- bind_rows(
+  data.frame(group = "male",   t(ind_point_from_pm(pm_m)), check.names = FALSE),
+  data.frame(group = "female", t(ind_point_from_pm(pm_f)), check.names = FALSE)
 )
 names(point_tbl) <- c("group", "indirect_pv", "indirect_attitude", "indirect_retailer_img")
+
+cat("\n========================\nPOINT INDIRECT EFFECTS (two-stage)\n========================\n")
 print(point_tbl)
 
 # -------------------------
 # 8) Bootstrap indirect significance by group
 # -------------------------
-B <- 5000  # for quick debug use 1000-2000, for final run 5000
-
+B <- 5000
 boot_m <- bootstrap_indirect(pls_male,   B = B, seed = 100, label = "male")
 boot_f <- bootstrap_indirect(pls_female, B = B, seed = 200, label = "female")
 
 tab_boot <- function(boot, group) {
   data.frame(
     group = group,
-    effect = c("indirect_pv", "indirect_attitude", "indirect_retailer_img"),
+    effect = c(
+      "perceived_value -> loyalty_item -> loyalty_retailer",
+      "attitude -> loyalty_item -> loyalty_retailer",
+      "retailer_img -> loyalty_item -> loyalty_retailer"
+    ),
     estimate = c(boot$ind_pv$estimate, boot$ind_att$estimate, boot$ind_img$estimate),
     ci_low   = c(boot$ind_pv$ci_low,   boot$ind_att$ci_low,   boot$ind_img$ci_low),
     ci_high  = c(boot$ind_pv$ci_high,  boot$ind_att$ci_high,  boot$ind_img$ci_high),
@@ -261,20 +286,22 @@ tab_boot <- function(boot, group) {
   )
 }
 
-cat("\n========================\nBOOTSTRAP INDIRECT SIGNIFICANCE (BY GROUP)\n========================\n")
 boot_tbl <- bind_rows(
   tab_boot(boot_m, "male"),
   tab_boot(boot_f, "female")
 )
+
+cat("\n========================\nBOOTSTRAP INDIRECT SIGNIFICANCE (BY GROUP)\n========================\n")
 print(boot_tbl)
 
 # -------------------------
-# 9) Moderated mediation: test diff in indirect (male - female)
+# 9) Moderated mediation: diff in indirect (male - female) + significance
 # -------------------------
 diff_test <- function(draw_m, draw_f) {
   Bm <- length(draw_m); Bf <- length(draw_f)
   Bmin <- min(Bm, Bf)
   d <- draw_m[1:Bmin] - draw_f[1:Bmin]
+  d <- d[is.finite(d)]
 
   est <- mean(d, na.rm = TRUE)
   ci <- quantile(d, probs = c(0.025, 0.975), names = FALSE, na.rm = TRUE)
@@ -287,22 +314,44 @@ diff_test <- function(draw_m, draw_f) {
   c(estimate = est, ci_low = ci[1], ci_high = ci[2], p_value = p_two)
 }
 
-cat("\n========================\nMODERATED MEDIATION (DIFF INDIRECT male - female)\n========================\n")
-
 diff_pv  <- diff_test(boot_m$draws$ind_pv,  boot_f$draws$ind_pv)
 diff_att <- diff_test(boot_m$draws$ind_att, boot_f$draws$ind_att)
 diff_img <- diff_test(boot_m$draws$ind_img, boot_f$draws$ind_img)
 
 diff_tbl <- data.frame(
-  effect = c("diff_indirect_pv", "diff_indirect_attitude", "diff_indirect_retailer_img"),
+  effect = c(
+    "diff: perceived_value -> loyalty_item -> loyalty_retailer (male - female)",
+    "diff: attitude -> loyalty_item -> loyalty_retailer (male - female)",
+    "diff: retailer_img -> loyalty_item -> loyalty_retailer (male - female)"
+  ),
   estimate = c(diff_pv["estimate"],  diff_att["estimate"],  diff_img["estimate"]),
   ci_low   = c(diff_pv["ci_low"],    diff_att["ci_low"],    diff_img["ci_low"]),
   ci_high  = c(diff_pv["ci_high"],   diff_att["ci_high"],   diff_img["ci_high"]),
   p_value  = c(diff_pv["p_value"],   diff_att["p_value"],   diff_img["p_value"])
 )
+
+cat("\n========================\nMODERATED MEDIATION (DIFF INDIRECT male - female)\n========================\n")
 print(diff_tbl)
 
+# -------------------------
+# 10) EXPORT TO EXCEL (sheets)
+# -------------------------
+out_file <- "pls_2stage_gender_indirect_diffs.xlsx"
+
+write_xlsx(
+  x = list(
+    sample_sizes = sample_sizes,
+    point_indirect = point_tbl,
+    bootstrap_indirect_by_group = boot_tbl,
+    diff_indirect = diff_tbl
+  ),
+  path = out_file
+)
+
+cat("\nSaved Excel:", out_file, "\n")
+cat("Sheets: sample_sizes, point_indirect, bootstrap_indirect_by_group, diff_indirect\n")
+
 cat("\nREADING RULES:\n")
-cat("- Within group: indirect effect is significant if 95% CI does NOT include 0 (or p_value < 0.05).\n")
-cat("- Moderated mediation: diff_indirect_* significant if its CI does NOT include 0 (or p_value < 0.05).\n")
-cat("- If you suspect gender coding 1/2 is reversed, swap mapping in Step 2.\n")
+cat("- Within group: indirect significant if 95% CI does NOT include 0 (or p_value < 0.05).\n")
+cat("- Moderated mediation: diff significant if 95% CI does NOT include 0 (or p_value < 0.05).\n")
+cat("- If your gender coding 1/2 is reversed, swap mapping in Step 2.\n")
